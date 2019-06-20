@@ -2,7 +2,7 @@
 
 <project name="packtag" default="build">
 
-	<property name="application.version" value="3.13"/>
+	<property name="application.version" value="3.15"/>
 	<property name="application.name" value="packtag"/>
 	<property name="application.jar" value="${application.name}-${application.version}.jar"/>
 	<property name="application.company" value="n/a"/>
@@ -81,8 +81,8 @@
 		<javac srcdir="${dir.main.src}"
 			destdir="${dir.classes}"
 			classpathref="classpath.packtag"
-			source="1.4"
-			target="1.4"
+			source="1.8"
+			target="1.8"
 			debug="on"
 			fork="yes"
 			encoding="ISO-8859-1"
@@ -177,7 +177,7 @@
 			destdir="${dir.dist.docs}"
 			packagenames="net.sf.*"
 			classpathref="classpath.packtag"
-			source="1.4"
+			source="1.8"
 			Private="off"
 			Protected="on"
 			Version="on"
