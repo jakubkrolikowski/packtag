@@ -38,7 +38,10 @@ public abstract class BaseTag extends BodyTagSupport {
 	protected final static String UTF_8 = "UTF-8";
 
 	/** Start tag name for a combined resource */
+	private final static String SRC_TAG_START_PREFIX = "<src";
 	private final static String SRC_TAG_START = "<src>";
+	private final static String DONT_MINIFY_ATTR = "dontminify";
+
 	/** End tag name for a combined resource */
 	private final static String SRC_TAG_END = "</src>";
 
@@ -92,10 +95,10 @@ public abstract class BaseTag extends BodyTagSupport {
 
 
 	/** Returns a List with the delivered resources, in this request  */
-	protected List getRequestResources() {
-		List requestResources = (List)pageContext.getRequest().getAttribute(REQUEST_RESOURCES);
+	protected List<String> getRequestResources() {
+		List<String> requestResources = (List<String>)pageContext.getRequest().getAttribute(REQUEST_RESOURCES);
 		if (requestResources == null) {
-			requestResources = new ArrayList();
+			requestResources = new ArrayList<String>();
 			pageContext.getRequest().setAttribute(REQUEST_RESOURCES, requestResources);
 		}
 		return requestResources;
@@ -109,7 +112,7 @@ public abstract class BaseTag extends BodyTagSupport {
 
 
 	/** Returns true, if all the resources are already delivered in this request */
-	protected boolean areResourcesDelivered(final List absolutePathes) {
+	protected boolean areResourcesDelivered(final List<String> absolutePathes) {
 		return getRequestResources().containsAll(absolutePathes);
 	}
 
@@ -121,7 +124,7 @@ public abstract class BaseTag extends BodyTagSupport {
 
 
 	/** Adds the resources to the request-List */
-	protected void addDeliveredResources(final List absolutePathes) {
+	protected void addDeliveredResources(final List<String> absolutePathes) {
 		getRequestResources().addAll(absolutePathes);
 	}
 
@@ -384,6 +387,45 @@ public abstract class BaseTag extends BodyTagSupport {
 		return result;
 	}
 
+	public static class BodyElem {
+
+		String path;
+		boolean dontMinify;
+
+
+		public String toString() {
+			return path + ":" + dontMinify;
+		}
+
+
+		public BodyElem(final String path, final boolean dontMinify) {
+			super();
+			this.path = path;
+			this.dontMinify = dontMinify;
+		}
+
+
+		public String getPath() {
+			return path;
+		}
+
+
+		public void setPath(final String path) {
+			this.path = path;
+		}
+
+
+		public boolean isDontMinify() {
+			return dontMinify;
+		}
+
+
+		public void setDontMinify(final boolean dontMinify) {
+			this.dontMinify = dontMinify;
+		}
+
+	}
+
 
 	/**
 	 * Parses the body of the Tag, this approach doesn't need any XML Parser and is therefore probably faster
@@ -393,11 +435,12 @@ public abstract class BaseTag extends BodyTagSupport {
 	 *
 	 * @return A List with shortQualifiedPaths
 	 */
-	protected List parseBody(final String bodyString) {
+	protected List<BodyElem> parseBody(final String bodyString) {
 		int bodyIndex = 0;
-		List resources = new ArrayList();
+		List<BodyElem> resources = new ArrayList<BodyElem>();
+
 		while(bodyIndex < (bodyString.length() - 1)) {
-			int indexSrcStart = bodyString.indexOf(SRC_TAG_START, bodyIndex);
+			int indexSrcStart = bodyString.indexOf(SRC_TAG_START_PREFIX, bodyIndex);
 			if (indexSrcStart == -1) {
 				return resources;
 			}
@@ -405,8 +448,17 @@ public abstract class BaseTag extends BodyTagSupport {
 			if (indexSrcEnd == -1) {
 				return resources;
 			}
-			String source = bodyString.substring(indexSrcStart + 5, indexSrcEnd).trim();
-			resources.add(determineAbsolutePath(source));
+			int ind = bodyString.indexOf(">", indexSrcStart);
+			int dma = bodyString.indexOf(DONT_MINIFY_ATTR, indexSrcStart);
+
+			boolean dontMinify = (dma > 0 && dma < ind);
+
+			String source = bodyString.substring(ind + 1, indexSrcEnd).trim();
+			if (!dontMinify && source.indexOf(".min.") > 0) {
+				dontMinify = true;
+			}
+
+			resources.add(new BodyElem(determineAbsolutePath(source), dontMinify));
 			bodyIndex = indexSrcEnd + 6;
 		}
 		return resources;

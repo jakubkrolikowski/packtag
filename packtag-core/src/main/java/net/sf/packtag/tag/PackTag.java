@@ -2,6 +2,7 @@
 package net.sf.packtag.tag;
 
 import java.io.BufferedInputStream;
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -9,12 +10,15 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.charset.Charset;
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import javax.servlet.jsp.JspException;
 import javax.servlet.jsp.JspTagException;
@@ -56,7 +60,7 @@ public abstract class PackTag extends BaseTag {
 		try {
 			// Attribute src is available, use this
 			if (apDefined) {
-				handleSingleResource(absolutePath, true);
+				handleSingleResource(absolutePath, true, false);
 			}
 			// A body with multiple resources is defined
 			else {
@@ -82,7 +86,7 @@ public abstract class PackTag extends BaseTag {
 	 *
 	 * @return true if resources have loaded or reloaded
 	 */
-	private boolean handleSingleResource(final String absolutePath, final boolean writePackedResource) throws Exception {
+	private boolean handleSingleResource(final String absolutePath, final boolean writePackedResource, final boolean dontMinify) throws Exception {
 		boolean reloaded = false;
 		if (isAbsolutePathWildcard(absolutePath)) {
 			reloaded = handleWildcardResource(absolutePath, writePackedResource);
@@ -92,7 +96,7 @@ public abstract class PackTag extends BaseTag {
 		}
 		else {
 			if (isEnabled()) {
-				reloaded = handleSingleResourceDelegate(absolutePath);
+				reloaded = handleSingleResourceDelegate(absolutePath, dontMinify);
 				Resource resource = PackCache.getResourceByAbsolutePath(getServletContext(), absolutePath);
 
 				if (writePackedResource && (!isTrackingResources() || !isResourceDelivered(absolutePath))) {
@@ -109,18 +113,18 @@ public abstract class PackTag extends BaseTag {
 	}
 
 
-	private boolean handleSingleResourceDelegate(final String absolutePath) throws Exception {
+	private boolean handleSingleResourceDelegate(final String absolutePath, final boolean dontMinify) throws Exception {
 		boolean reloaded = false;
 		Resource resource = null;
 		if (PackCache.existResource(getServletContext(), absolutePath)) {
 			resource = PackCache.getResourceByAbsolutePath(getServletContext(), absolutePath);
 			if (hasResourceChanged(resource)) {
-				resource = reloadSingleResource(absolutePath);
+				resource = reloadSingleResource(absolutePath, dontMinify);
 				reloaded = true;
 			}
 		}
 		else {
-			resource = reloadSingleResource(absolutePath);
+			resource = reloadSingleResource(absolutePath, dontMinify);
 			reloaded = true;
 		}
 		return reloaded;
@@ -176,15 +180,16 @@ public abstract class PackTag extends BaseTag {
 		if ((bodyString != null) && !bodyString.equals(EMPTY_STRING)) {
 			// reloaded becomes true if one resource has been reloaded/modified
 			boolean reloaded = false;
-			List absolutePaths = parseBody(bodyString);
+			List<BodyElem> absolutePaths = parseBody(bodyString);
 			if (absolutePaths.size() == 0) {
 				throw new PackException("No resources were specified.");
 			}
 
-			Iterator iterAbsolutePaths = absolutePaths.iterator();
+			Iterator<BodyElem> iterAbsolutePaths = absolutePaths.iterator();
 			while(iterAbsolutePaths.hasNext()) {
-				String currentAbsolutePath = (String)iterAbsolutePaths.next();
-				reloaded |= handleSingleResource(currentAbsolutePath, false);
+				BodyElem el = iterAbsolutePaths.next();
+				String currentAbsolutePath = el.getPath();
+				reloaded |= handleSingleResource(currentAbsolutePath, false, el.isDontMinify());
 				if (!isExternalResourcesEnabled() && isExternalResource(currentAbsolutePath)) {
 					iterAbsolutePaths.remove();
 				}
@@ -194,9 +199,10 @@ public abstract class PackTag extends BaseTag {
 			// are already written to the output by handleSingleResource(..)
 			if (isEnabled()) {
 				Resource resource = handleMultipleAbsolutePaths(reloaded, absolutePaths);
-				if (!isTrackingResources() || !areResourcesDelivered(absolutePaths)) {
+				List<String> absPaths = absolutePaths.stream().map(BodyElem::getPath).collect(Collectors.toList());
+				if (!isTrackingResources() || !areResourcesDelivered(absPaths)) {
 					writeResouce(pageContext.getOut(), resource.getMappedPath());
-					addDeliveredResources(absolutePaths);
+					addDeliveredResources(absPaths);
 				}
 			}
 		}
@@ -207,7 +213,7 @@ public abstract class PackTag extends BaseTag {
 	}
 
 
-	private Resource handleMultipleAbsolutePaths(final boolean reloaded, final List absolutePaths) throws Exception {
+	private Resource handleMultipleAbsolutePaths(final boolean reloaded, final List<BodyElem> absolutePaths) throws Exception {
 		Resource resource = null;
 		String combinedAbsolutePaths = absolutePaths.toString();
 		if (PackCache.existResource(getServletContext(), combinedAbsolutePaths) && !reloaded) {
@@ -282,15 +288,51 @@ public abstract class PackTag extends BaseTag {
 		}
 		return result;
 	}
+	
+	protected boolean isMinified(final String path) {
+		return path.indexOf(".min.") > 0;
+	}
+
+	protected static final String LINE_SEPARATOR = System.getProperty("line.separator");
+
+
+	protected String resourceToString(final InputStream resourceAsStream, final Charset charset) throws PackException {
+		StringBuffer result = new StringBuffer();
+		BufferedReader br = new BufferedReader(new InputStreamReader(resourceAsStream, charset));
+		try {
+			boolean firstLine = true;
+			String line = br.readLine();
+			while(line != null) {
+				if (firstLine) {
+					firstLine = false;
+				}
+				else {
+					result.append(LINE_SEPARATOR);
+				}
+				result.append(line);
+				line = br.readLine();
+			}
+			br.close();
+		}
+		catch (Exception ex) {
+			throw new PackException(ex);
+		}
+		return result.toString();
+	}
 
 
 	/** Compresses the resource and stores it in the cache and as file (if cachetype is file) */
-	private Resource reloadSingleResource(final String absolutePath) throws Exception {
+	private Resource reloadSingleResource(final String absolutePath, final boolean dontMinify) throws Exception {
 		InputStream stream = getResourceStream(absolutePath);
+		String packedResource;
 
-		String rewriteAbsolutePath = isUrlRewriteEnabled() ? absolutePath : null;
-		String packedResource = getPackStrategyDelegate().pack(stream, getCharset(), rewriteAbsolutePath);
-
+		if (isMinified(absolutePath)) {
+			packedResource = resourceToString(stream, getCharset());
+		}
+		else {
+			String rewriteAbsolutePath = isUrlRewriteEnabled() ? absolutePath : null;
+			packedResource = getPackStrategyDelegate().pack(stream, getCharset(), rewriteAbsolutePath);
+		}
 		stream.close();
 		Resource resource = new Resource(false, packedResource.hashCode());
 		// Needs to hold in memory for every cachetype, because of several usage in combined and wildcard resources
@@ -321,7 +363,7 @@ public abstract class PackTag extends BaseTag {
 		Iterator iterFiles = files.iterator();
 		while(iterFiles.hasNext()) {
 			String file = (String)iterFiles.next();
-			reloaded |= handleSingleResourceDelegate(file);
+			reloaded |= handleSingleResourceDelegate(file, false);
 		}
 		result = handleMultipleAbsolutePaths(reloaded, files);
 		result = result.cloneObject();
@@ -335,22 +377,43 @@ public abstract class PackTag extends BaseTag {
 
 
 	/** Compresses multiple resources and stores them in the cache and as file (if cachetype is file) */
-	private Resource reloadCombinedResource(final List absolutePaths) throws Exception {
+	private Resource reloadCombinedResource(final List<BodyElem> absolutePaths) throws Exception {
 		// Assumption: All resources allready have been loaded/reloaded by handleSingleResource
 
 		StringBuffer minifedBuffer = new StringBuffer();
-		Iterator iterAps = absolutePaths.iterator();
+		StringBuffer zrobioneBuffer = new StringBuffer();
+		Iterator<BodyElem> iterAps = absolutePaths.iterator();
 		while(iterAps.hasNext()) {
-			String currentAbsolutePath = (String)iterAps.next();
+			BodyElem el = iterAps.next();
+			String currentAbsolutePath = el.getPath();
+
 			Resource resource = PackCache.getResourceByAbsolutePath(getServletContext(), currentAbsolutePath);
-			minifedBuffer.append(resource.getMinifedResource());
-			minifedBuffer.append("\n");
+			if (el.isDontMinify()) {
+				if (minifedBuffer.length() > 0) {
+					ByteArrayInputStream stream = new ByteArrayInputStream(minifedBuffer.toString().getBytes(UTF_8));
+					// pakujemy to co jest do tej porty
+					String packed = getPackStrategyDelegate().pack(stream, getCharset(), null);
+					minifedBuffer = new StringBuffer();
+					zrobioneBuffer.append(packed + "\n");
+				}
+				zrobioneBuffer.append(resource.getMinifedResource());
+				zrobioneBuffer.append("\n");
+			}
+			else {
+				minifedBuffer.append(resource.getMinifedResource());
+				minifedBuffer.append("\n");
+			}
+
+		}
+		if (minifedBuffer.length() > 0) {
+			ByteArrayInputStream stream = new ByteArrayInputStream(minifedBuffer.toString().getBytes(UTF_8));
+			// pakujemy to co zostało
+			String packed = getPackStrategyDelegate().pack(stream, getCharset(), null);
+			minifedBuffer = new StringBuffer();
+			zrobioneBuffer.append(packed + "\n");
 		}
 
-		ByteArrayInputStream stream = new ByteArrayInputStream(minifedBuffer.toString().getBytes(UTF_8));
-
-		//InputStream stream = getCombinedResourceStream(absolutePaths);
-		String packedResource = getPackStrategyDelegate().pack(stream, getCharset(), null);
+		String packedResource = zrobioneBuffer.toString();
 
 		Resource resource = new Resource(true, packedResource.hashCode());
 		// Needs to hold in memory for every cachetype, because of several usage in combined and wildcard resources
